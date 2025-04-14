@@ -2,59 +2,72 @@ package main
 
 import (
 	"context"
+	"currency-service/adapter"
 	"currency-service/config"
 	"currency-service/database"
-	"currency-service/fetcher"
-	"currency-service/sender"
+	"currency-service/job"
+	"currency-service/repository"
+	"currency-service/usecase"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/joho/godotenv"
 )
 
 func main() {
-	cfg := config.GetConfig()
-	database.InitDatabase(cfg.DatabaseDSN) // Подключаем БД
+	// Загружаем переменные окружения из .env
+	if err := godotenv.Load(); err != nil {
+		log.Println("Файл .env не найден, используются переменные окружения")
+	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	cfg := config.GetConfig()
+
+	// Инициализация базы данных
+	db, err := database.InitDatabase(cfg.DatabaseDSN)
+	if err != nil {
+		log.Fatalf("Ошибка при инициализации БД: %v", err)
+	}
+
+	// Создаем адаптеры и зависимости
+	absAdapter := adapter.NewAdapter(http.Client{}, cfg.ABSAPIURL)
+	websiteSender := adapter.NewWebsiteSender(http.Client{}, cfg.BankAPIURL, cfg.AuthURL, cfg.LoginEmail, cfg.LoginPassword)
+	ratesRepo := repository.NewRatesRepository(db)
+	useCase := usecase.NewRatesUsecase(absAdapter, ratesRepo, websiteSender)
+
+	// Запуск контекста и планировщика
+	_, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ticker := time.NewTicker(cfg.UpdateInterval)
-	defer ticker.Stop()
+	scheduler, err := job.NewScheduler()
+	if err != nil {
+		log.Fatalf("Ошибка при создании планировщика: %v", err)
+	}
 
+	err = scheduler.Register(cfg.UpdateInterval, func() {
+		if err := useCase.FetchSaveAndSendRates(); err != nil {
+			log.Printf("Ошибка при выполнении задачи: %v", err)
+		}
+	})
+	if err != nil {
+		log.Fatalf("Ошибка при регистрации задачи: %v", err)
+	}
+
+	scheduler.Start()
+	log.Println("Сервис курсов валют запущен с использованием gocron")
+
+	// Ожидаем сигнал завершения
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
-	log.Println("Currency rate service started")
-
-	go func() {
-		for {
-			select {
-			case <-ticker.C:
-				log.Println("Fetching currency rates...")
-				rates, err := fetcher.FetchRates(ctx, cfg.ABSAPIURL)
-				if err != nil {
-					log.Printf("Error fetching rates: %v", err)
-					continue
-				}
-
-				log.Println("Sending currency rates to bank API...")
-				if err := sender.SendRates(ctx, cfg.BankAPIURL, rates); err != nil {
-					log.Printf("Error sending rates: %v", err)
-				} else {
-					log.Println("Rates successfully updated on the bank website")
-				}
-			case <-ctx.Done():
-				log.Println("Shutting down service...")
-				return
-			}
-		}
-	}()
-
 	<-sigs
-	log.Println("Received shutdown signal")
+	log.Println("Получен сигнал завершения (Ctrl+C или остановка)")
+
+	scheduler.Shutdown()
 	cancel()
-	time.Sleep(2 * time.Second) // Даем время завершить текущие операции
-	log.Println("Service stopped")
+	time.Sleep(2 * time.Second)
+	log.Println("Сервис остановлен")
 }

@@ -12,6 +12,10 @@ type Config struct {
 	BankAPIURL     string
 	UpdateInterval time.Duration
 	DatabaseDSN    string
+
+	AuthURL       string
+	LoginEmail    string
+	LoginPassword string
 }
 
 func GetConfig() Config {
@@ -25,6 +29,10 @@ func GetConfig() Config {
 		BankAPIURL:     strings.TrimSpace(getEnv("BANK_API_URL", "https://default-bank-api.com")),
 		UpdateInterval: time.Duration(updateInterval) * time.Second,
 		DatabaseDSN:    strings.TrimSpace(getEnv("DATABASE_DSN", "currency.db")), // SQLite по умолчанию
+
+		AuthURL:       strings.TrimSpace(getEnv("AUTH_URL", "")),
+		LoginEmail:    strings.TrimSpace(getEnv("LOGIN_EMAIL", "")),
+		LoginPassword: strings.TrimSpace(getEnv("LOGIN_PASSWORD", "")),
 	}
 }
 
